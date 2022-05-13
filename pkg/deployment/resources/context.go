@@ -30,7 +30,6 @@ import (
 	"github.com/arangodb/kube-arangodb/pkg/deployment/reconciler"
 	"github.com/arangodb/kube-arangodb/pkg/operator/scope"
 	"github.com/arangodb/kube-arangodb/pkg/util/k8sutil"
-	core "k8s.io/api/core/v1"
 )
 
 // Context provides all functions needed by the Resources service
@@ -65,8 +64,6 @@ type Context interface {
 	// CreateEvent creates a given event.
 	// On error, the error is logged.
 	CreateEvent(evt *k8sutil.Event)
-	// GetOwnedPVCs returns a list of all PVCs owned by the deployment.
-	GetOwnedPVCs() ([]core.PersistentVolumeClaim, error)
 	// GetBackup receives information about a backup resource
 	GetBackup(ctx context.Context, backup string) (*backupApi.ArangoBackup, error)
 	GetScope() scope.Scope

@@ -28,6 +28,8 @@ import (
 type ArangoClusterSynchronizationSpec struct {
 	DeploymentName string                                      `json:"deploymentName,omitempty"`
 	KubeConfig     *ArangoClusterSynchronizationKubeConfigSpec `json:"kubeconfig,omitempty"`
+
+	Service *ArangoClusterSynchronizationServiceSpec
 }
 
 type ArangoClusterSynchronizationKubeConfigSpec struct {

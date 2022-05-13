@@ -26,6 +26,8 @@ type ArangoClusterSynchronizationStatus struct {
 	Deployment       *ArangoClusterSynchronizationDeploymentStatus `json:"deployment,omitempty"`
 	RemoteDeployment *ArangoClusterSynchronizationDeploymentStatus `json:"remoteDeployment,omitempty"`
 
+	Members *ArangoClusterSynchronizationDeploymentStatusMembers
+
 	Conditions ConditionList `json:"conditions,omitempty"`
 }
 
@@ -33,4 +35,8 @@ type ArangoClusterSynchronizationDeploymentStatus struct {
 	Name      string    `json:"name"`
 	Namespace string    `json:"namespace"`
 	UID       types.UID `json:"uid"`
+}
+
+type ArangoClusterSynchronizationDeploymentStatusMembers struct {
+	Mapping map[string]int `json:"mapping,omitempty"`
 }

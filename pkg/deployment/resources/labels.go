@@ -74,7 +74,7 @@ func (r *Resources) EnsureSecretLabels(ctx context.Context, cachedStatus inspect
 	if err := cachedStatus.Secret().V1().Iterate(func(secret *core.Secret) error {
 		if ensureLabelsMap(secret.Kind, secret, r.context.GetSpec(), func(name string, d []byte) error {
 			return globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-				_, err := r.context.SecretsModInterface().Patch(ctxChild,
+				_, err := cachedStatus.SecretsModInterface().Patch(ctxChild,
 					name, types.JSONPatchType, d, meta.PatchOptions{})
 				return err
 			})
@@ -101,7 +101,7 @@ func (r *Resources) EnsureServiceAccountsLabels(ctx context.Context, cachedStatu
 	if err := cachedStatus.ServiceAccount().V1().Iterate(func(serviceAccount *core.ServiceAccount) error {
 		if ensureLabelsMap(serviceAccount.Kind, serviceAccount, r.context.GetSpec(), func(name string, d []byte) error {
 			return globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-				_, err := r.context.ServiceAccountsModInterface().Patch(ctxChild, name, types.JSONPatchType, d, meta.PatchOptions{})
+				_, err := cachedStatus.ServiceAccountsModInterface().Patch(ctxChild, name, types.JSONPatchType, d, meta.PatchOptions{})
 				return err
 			})
 		}) {
@@ -127,7 +127,7 @@ func (r *Resources) EnsureServicesLabels(ctx context.Context, cachedStatus inspe
 	if err := cachedStatus.Service().V1().Iterate(func(service *core.Service) error {
 		if ensureLabelsMap(service.Kind, service, r.context.GetSpec(), func(name string, d []byte) error {
 			return globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-				_, err := r.context.ServicesModInterface().Patch(ctxChild, name, types.JSONPatchType, d, meta.PatchOptions{})
+				_, err := cachedStatus.ServicesModInterface().Patch(ctxChild, name, types.JSONPatchType, d, meta.PatchOptions{})
 				return err
 			})
 		}) {
@@ -186,7 +186,7 @@ func (r *Resources) EnsurePodsLabels(ctx context.Context, cachedStatus inspector
 	if err := cachedStatus.Pod().V1().Iterate(func(pod *core.Pod) error {
 		if ensureGroupLabelsMap(pod.Kind, pod, r.context.GetSpec(), func(name string, d []byte) error {
 			return globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-				_, err := r.context.PodsModInterface().Patch(ctxChild, name, types.JSONPatchType, d, meta.PatchOptions{})
+				_, err := cachedStatus.PodsModInterface().Patch(ctxChild, name, types.JSONPatchType, d, meta.PatchOptions{})
 				return err
 			})
 		}) {
@@ -213,7 +213,7 @@ func (r *Resources) EnsurePersistentVolumeClaimsLabels(ctx context.Context, cach
 	actionFn := func(persistentVolumeClaim *core.PersistentVolumeClaim) error {
 		if ensureGroupLabelsMap(persistentVolumeClaim.Kind, persistentVolumeClaim, r.context.GetSpec(), func(name string, d []byte) error {
 			return globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-				_, err := r.context.PersistentVolumeClaimsModInterface().Patch(ctxChild, name, types.JSONPatchType, d, meta.PatchOptions{})
+				_, err := cachedStatus.PersistentVolumeClaimsModInterface().Patch(ctxChild, name, types.JSONPatchType, d, meta.PatchOptions{})
 				return err
 			})
 		}) {

@@ -37,7 +37,7 @@ func createResourcesPlan(ctx context.Context, log zerolog.Logger, apiObject k8su
 		return currentPlan, nil, false
 	}
 
-	r := recoverPlanAppender(log, newPlanAppender(NewWithPlanBuilder(ctx, log, apiObject, spec, status, builderCtx), status.BackOff, currentPlan))
+	r := recoverPlanAppender(log, newPlanAppender(NewWithPlanBuilder(ctx, log, apiObject, spec, status, builderCtx), status.BackOff, currentPlan)).Apply(createArangoMembersResourceSyncPlan).Apply(createSecretsResourceSyncPlan)
 
 	return r.Plan(), r.BackOff(), true
 }

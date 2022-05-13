@@ -34,12 +34,7 @@ import (
 	"github.com/arangodb/kube-arangodb/pkg/deployment/patch"
 	"github.com/arangodb/kube-arangodb/pkg/util/k8sutil"
 	inspectorInterface "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector"
-	persistentvolumeclaimv1 "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector/persistentvolumeclaim/v1"
-	podv1 "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector/pod/v1"
 	poddisruptionbudgetv1beta1 "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector/poddisruptionbudget/v1beta1"
-	secretv1 "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector/secret/v1"
-	servicev1 "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector/service/v1"
-	serviceaccountv1 "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector/serviceaccount/v1"
 	servicemonitorv1 "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector/servicemonitor/v1"
 )
 
@@ -100,16 +95,6 @@ type DeploymentImageManager interface {
 }
 
 type DeploymentModInterfaces interface {
-	// SecretsModInterface define secret modification interface
-	SecretsModInterface() secretv1.ModInterface
-	// PodsModInterface define pod modification interface
-	PodsModInterface() podv1.ModInterface
-	// ServiceAccountsModInterface define serviceaccounts modification interface
-	ServiceAccountsModInterface() serviceaccountv1.ModInterface
-	// ServicesModInterface define services modification interface
-	ServicesModInterface() servicev1.ModInterface
-	// PersistentVolumeClaimsModInterface define persistentvolumeclaims modification interface
-	PersistentVolumeClaimsModInterface() persistentvolumeclaimv1.ModInterface
 	// PodDisruptionBudgetsModInterface define poddisruptionbudgets modification interface
 	PodDisruptionBudgetsModInterface() poddisruptionbudgetv1beta1.ModInterface
 

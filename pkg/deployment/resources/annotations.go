@@ -47,7 +47,7 @@ func (r *Resources) EnsureAnnotations(ctx context.Context, cachedStatus inspecto
 
 	patchSecret := func(name string, d []byte) error {
 		return globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-			_, err := r.context.SecretsModInterface().Patch(ctxChild, name, types.JSONPatchType, d,
+			_, err := cachedStatus.SecretsModInterface().Patch(ctxChild, name, types.JSONPatchType, d,
 				meta.PatchOptions{})
 			return err
 		})
@@ -64,7 +64,7 @@ func (r *Resources) EnsureAnnotations(ctx context.Context, cachedStatus inspecto
 
 	patchServiceAccount := func(name string, d []byte) error {
 		return globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-			_, err := r.context.ServiceAccountsModInterface().Patch(ctxChild, name,
+			_, err := cachedStatus.ServiceAccountsModInterface().Patch(ctxChild, name,
 				types.JSONPatchType, d, meta.PatchOptions{})
 			return err
 		})
@@ -81,7 +81,7 @@ func (r *Resources) EnsureAnnotations(ctx context.Context, cachedStatus inspecto
 
 	patchService := func(name string, d []byte) error {
 		return globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-			_, err := r.context.ServicesModInterface().Patch(ctxChild, name, types.JSONPatchType, d,
+			_, err := cachedStatus.ServicesModInterface().Patch(ctxChild, name, types.JSONPatchType, d,
 				meta.PatchOptions{})
 			return err
 		})
@@ -115,7 +115,7 @@ func (r *Resources) EnsureAnnotations(ctx context.Context, cachedStatus inspecto
 
 	patchPVC := func(name string, d []byte) error {
 		return globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-			_, err := r.context.PersistentVolumeClaimsModInterface().Patch(ctxChild, name,
+			_, err := cachedStatus.PersistentVolumeClaimsModInterface().Patch(ctxChild, name,
 				types.JSONPatchType, d, meta.PatchOptions{})
 			return err
 		})
@@ -132,7 +132,7 @@ func (r *Resources) EnsureAnnotations(ctx context.Context, cachedStatus inspecto
 
 	patchPod := func(name string, d []byte) error {
 		return globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-			_, err := r.context.PodsModInterface().Patch(ctxChild, name, types.JSONPatchType, d,
+			_, err := cachedStatus.PodsModInterface().Patch(ctxChild, name, types.JSONPatchType, d,
 				meta.PatchOptions{})
 			return err
 		})

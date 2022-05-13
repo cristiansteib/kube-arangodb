@@ -53,14 +53,16 @@ var phase = phaseMap{
 			// Clean Pod details
 			m.PodUID = ""
 
-			// Add ClusterID
-			if m.ClusterID == "" {
-				m.ClusterID = obj.GetUID()
-			}
-
 			if m.Architecture == nil {
 				d := spec.Architecture.GetDefault()
 				m.Architecture = &d
+			}
+
+			if m.ExpectedClusterID != "" {
+				m.ClusterID = m.ExpectedClusterID
+				m.ExpectedClusterID = ""
+			} else if m.ClusterID == "" {
+				m.ClusterID = obj.GetUID()
 			}
 		},
 	},

@@ -28,6 +28,7 @@ import (
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/arangodb/kube-arangodb/pkg/deployment/acs/sutil"
 	"github.com/arangodb/kube-arangodb/pkg/deployment/patch"
 	"github.com/arangodb/kube-arangodb/pkg/metrics"
 	"github.com/arangodb/kube-arangodb/pkg/util"
@@ -58,59 +59,65 @@ func (r *Resources) InspectPVCs(ctx context.Context, cachedStatus inspectorInter
 
 	// Update member status from all pods found
 	status, _ := r.context.GetStatus()
-	if err := cachedStatus.PersistentVolumeClaim().V1().Iterate(func(pvc *v1.PersistentVolumeClaim) error {
-		// PVC belongs to this deployment, update metric
-		inspectedPVCsCounters.WithLabelValues(deploymentName).Inc()
+	if err := r.context.ACS().ForEachHealthyCluster(func(item sutil.ACSItem) error {
+		cache := item.Cache()
+		if err := cachedStatus.PersistentVolumeClaim().V1().Iterate(func(pvc *v1.PersistentVolumeClaim) error {
+			// PVC belongs to this deployment, update metric
+			inspectedPVCsCounters.WithLabelValues(deploymentName).Inc()
 
-		// Find member status
-		memberStatus, group, found := status.Members.MemberStatusByPVCName(pvc.GetName())
-		if !found {
-			log.Debug().Str("pvc", pvc.GetName()).Msg("no memberstatus found for PVC")
-			if k8sutil.IsPersistentVolumeClaimMarkedForDeletion(pvc) && len(pvc.GetFinalizers()) > 0 {
-				// Strange, pvc belongs to us, but we have no member for it.
-				// Remove all finalizers, so it can be removed.
-				log.Warn().Msg("PVC belongs to this deployment, but we don't know the member. Removing all finalizers")
-				_, err := k8sutil.RemovePVCFinalizers(ctx, r.context.GetCachedStatus(), log, r.context.PersistentVolumeClaimsModInterface(), pvc, pvc.GetFinalizers(), false)
+			// Find member status
+			memberStatus, group, found := status.Members.MemberStatusByPVCName(pvc.GetName())
+			if !found {
+				log.Debug().Str("pvc", pvc.GetName()).Msg("no memberstatus found for PVC")
+				if k8sutil.IsPersistentVolumeClaimMarkedForDeletion(pvc) && len(pvc.GetFinalizers()) > 0 {
+					// Strange, pvc belongs to us, but we have no member for it.
+					// Remove all finalizers, so it can be removed.
+					log.Warn().Msg("PVC belongs to this deployment, but we don't know the member. Removing all finalizers")
+					_, err := k8sutil.RemovePVCFinalizers(ctx, r.context.GetCachedStatus(), log, cache.PersistentVolumeClaimsModInterface(), pvc, pvc.GetFinalizers(), false)
+					if err != nil {
+						log.Debug().Err(err).Msg("Failed to update PVC (to remove all finalizers)")
+						return errors.WithStack(err)
+					}
+				}
+				return nil
+			}
+
+			owner := r.context.GetAPIObject().AsOwner()
+			if k8sutil.UpdateOwnerRefToObjectIfNeeded(pvc.GetObjectMeta(), &owner) {
+				q := patch.NewPatch(patch.ItemReplace(patch.NewPath("metadata", "ownerReferences"), pvc.ObjectMeta.OwnerReferences))
+				d, err := q.Marshal()
 				if err != nil {
-					log.Debug().Err(err).Msg("Failed to update PVC (to remove all finalizers)")
+					log.Debug().Err(err).Msg("Failed to prepare PVC patch (ownerReferences)")
+					return errors.WithStack(err)
+				}
+
+				err = globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
+					_, err := cache.PersistentVolumeClaimsModInterface().Patch(ctxChild, pvc.GetName(), types.JSONPatchType, d, meta.PatchOptions{})
+					return err
+				})
+
+				if err != nil {
+					log.Debug().Err(err).Msg("Failed to update PVC (ownerReferences)")
 					return errors.WithStack(err)
 				}
 			}
+
+			if k8sutil.IsPersistentVolumeClaimMarkedForDeletion(pvc) {
+				// Process finalizers
+				if x, err := r.runPVCFinalizers(ctx, cache, pvc, group, memberStatus); err != nil {
+					// Only log here, since we'll be called to try again.
+					log.Warn().Err(err).Msg("Failed to run PVC finalizers")
+				} else {
+					nextInterval = nextInterval.ReduceTo(x)
+				}
+			}
+
 			return nil
+		}, pvcv1.FilterPersistentVolumeClaimsByLabels(k8sutil.LabelsForDeployment(deploymentName, ""))); err != nil {
+			return err
 		}
-
-		owner := r.context.GetAPIObject().AsOwner()
-		if k8sutil.UpdateOwnerRefToObjectIfNeeded(pvc.GetObjectMeta(), &owner) {
-			q := patch.NewPatch(patch.ItemReplace(patch.NewPath("metadata", "ownerReferences"), pvc.ObjectMeta.OwnerReferences))
-			d, err := q.Marshal()
-			if err != nil {
-				log.Debug().Err(err).Msg("Failed to prepare PVC patch (ownerReferences)")
-				return errors.WithStack(err)
-			}
-
-			err = globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-				_, err := r.context.PersistentVolumeClaimsModInterface().Patch(ctxChild, pvc.GetName(), types.JSONPatchType, d, meta.PatchOptions{})
-				return err
-			})
-
-			if err != nil {
-				log.Debug().Err(err).Msg("Failed to update PVC (ownerReferences)")
-				return errors.WithStack(err)
-			}
-		}
-
-		if k8sutil.IsPersistentVolumeClaimMarkedForDeletion(pvc) {
-			// Process finalizers
-			if x, err := r.runPVCFinalizers(ctx, pvc, group, memberStatus); err != nil {
-				// Only log here, since we'll be called to try again.
-				log.Warn().Err(err).Msg("Failed to run PVC finalizers")
-			} else {
-				nextInterval = nextInterval.ReduceTo(x)
-			}
-		}
-
 		return nil
-	}, pvcv1.FilterPersistentVolumeClaimsByLabels(k8sutil.LabelsForDeployment(deploymentName, ""))); err != nil {
+	}); err != nil {
 		return 0, err
 	}
 

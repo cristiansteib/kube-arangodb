@@ -448,9 +448,14 @@ func (r *Resources) SelectImageForMember(spec api.DeploymentSpec, status api.Dep
 }
 
 // createPodForMember creates all Pods listed in member status
-func (r *Resources) createPodForMember(ctx context.Context, cachedStatus inspectorInterface.Inspector, spec api.DeploymentSpec, arangoMember *api.ArangoMember, memberID string, imageNotFoundOnce *sync.Once) error {
+func (r *Resources) createPodForMember(ctx context.Context, spec api.DeploymentSpec, cluster sutil.ACSItem, arangoMember *api.ArangoMember, memberID string, imageNotFoundOnce *sync.Once) error {
 	log := r.log
 	status, lastVersion := r.context.GetStatus()
+
+	obj, err := cluster.Cache().GetCurrentArangoDeployment()
+	if err != nil {
+		return err
+	}
 
 	// Select image
 	imageInfo, imageFound := r.SelectImage(spec, status)
@@ -481,6 +486,8 @@ func (r *Resources) createPodForMember(ctx context.Context, cachedStatus inspect
 		}
 	}
 
+	cachedStatus := cluster.Cache()
+
 	imageInfo = *m.Image
 
 	apiObject := r.context.GetAPIObject()
@@ -504,7 +511,7 @@ func (r *Resources) createPodForMember(ctx context.Context, cachedStatus inspect
 
 		ctxChild, cancel := globals.GetGlobalTimeouts().Kubernetes().WithTimeout(ctx)
 		defer cancel()
-		podName, uid, err := CreateArangoPod(ctxChild, r.context.PodsModInterface(), apiObject, spec, group, CreatePodFromTemplate(template.PodSpec))
+		podName, uid, err := CreateArangoPod(ctxChild, cachedStatus.PodsModInterface(), obj, spec, group, CreatePodFromTemplate(template.PodSpec))
 		if err != nil {
 			return errors.WithStack(err)
 		}
@@ -547,7 +554,7 @@ func (r *Resources) createPodForMember(ctx context.Context, cachedStatus inspect
 				}
 			}
 			owner := apiObject.AsOwner()
-			_, err = createTLSServerCertificate(ctx, log, cachedStatus, r.context.SecretsModInterface(), names, spec.Sync.TLS, tlsKeyfileSecretName, &owner)
+			_, err = createTLSServerCertificate(ctx, log, cachedStatus, cachedStatus.SecretsModInterface(), names, spec.Sync.TLS, tlsKeyfileSecretName, &owner)
 			if err != nil && !k8sutil.IsAlreadyExists(err) {
 				return errors.WithStack(errors.Wrapf(err, "Failed to create TLS keyfile secret"))
 			}
@@ -555,7 +562,7 @@ func (r *Resources) createPodForMember(ctx context.Context, cachedStatus inspect
 
 		ctxChild, cancel := globals.GetGlobalTimeouts().Kubernetes().WithTimeout(ctx)
 		defer cancel()
-		podName, uid, err := CreateArangoPod(ctxChild, r.context.PodsModInterface(), apiObject, spec, group, CreatePodFromTemplate(template.PodSpec))
+		podName, uid, err := CreateArangoPod(ctxChild, cachedStatus.PodsModInterface(), apiObject, spec, group, CreatePodFromTemplate(template.PodSpec))
 		if err != nil {
 			return errors.WithStack(err)
 		}
@@ -706,6 +713,15 @@ func (r *Resources) EnsurePods(ctx context.Context, cachedStatus inspectorInterf
 				continue
 			}
 
+			cluster, ok := r.context.ACS().Cluster(m.ClusterID)
+			if !ok {
+				return errors.Newf("Unable to find cluster with id %s", m.ExpectedClusterID)
+			}
+
+			if !cluster.Ready() {
+				return errors.Newf("Cluster %s is not ready", m.ExpectedClusterID)
+			}
+
 			member, ok := cachedStatus.ArangoMember().V1().GetSimple(m.ArangoMemberName(r.context.GetName(), group))
 			if !ok {
 				// ArangoMember not found, skip
@@ -721,7 +737,7 @@ func (r *Resources) EnsurePods(ctx context.Context, cachedStatus inspectorInterf
 			r.log.Warn().Msgf("Ensuring pod")
 
 			spec := r.context.GetSpec()
-			if err := r.createPodForMember(ctx, cachedStatus, spec, member, m.ID, imageNotFoundOnce); err != nil {
+			if err := r.createPodForMember(ctx, spec, cluster, member, m.ID, imageNotFoundOnce); err != nil {
 				r.log.Warn().Err(err).Msgf("Ensuring pod failed")
 				return errors.WithStack(err)
 			}

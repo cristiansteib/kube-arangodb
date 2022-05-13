@@ -38,16 +38,61 @@ import (
 
 	api "github.com/arangodb/kube-arangodb/pkg/apis/deployment/v1"
 	"github.com/arangodb/kube-arangodb/pkg/apis/shared"
+	"github.com/arangodb/kube-arangodb/pkg/deployment/acs/sutil"
+	"github.com/arangodb/kube-arangodb/pkg/deployment/resources/inspector"
 	"github.com/arangodb/kube-arangodb/pkg/metrics"
 	"github.com/arangodb/kube-arangodb/pkg/util/k8sutil"
 	servicev1 "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector/service/v1"
 	"github.com/rs/zerolog"
+	"k8s.io/apimachinery/pkg/types"
+	"sort"
 )
 
 var (
 	inspectedServicesCounters     = metrics.MustRegisterCounterVec(metricsComponent, "inspected_services", "Number of Service inspections per deployment", metrics.DeploymentName)
 	inspectServicesDurationGauges = metrics.MustRegisterGaugeVec(metricsComponent, "inspect_services_duration", "Amount of time taken by a single inspection of all Services for a deployment (in sec)", metrics.DeploymentName)
 )
+
+type memberInfo struct {
+	serving  bool
+	ready    bool
+	ip       string
+	port     int32
+	portName string
+	cid      types.UID
+
+	sg bool
+}
+
+type memberInfos map[string]memberInfo
+
+func (m memberInfos) GetAllReadyForCluster(uid types.UID) []string {
+	z := make([]string, 0, len(m))
+
+	for k, v := range m {
+		if v.cid == uid && v.ready && v.sg {
+			z = append(z, k)
+		}
+	}
+
+	sort.Strings(z)
+
+	return z
+}
+
+func (m memberInfos) GetAllReady() []string {
+	z := make([]string, 0, len(m))
+
+	for k, v := range m {
+		if v.ready && v.sg {
+			z = append(z, k)
+		}
+	}
+
+	sort.Strings(z)
+
+	return z
+}
 
 // EnsureServices creates all services needed to service the deployment
 func (r *Resources) EnsureServices(ctx context.Context, cachedStatus inspectorInterface.Inspector) error {
@@ -61,10 +106,42 @@ func (r *Resources) EnsureServices(ctx context.Context, cachedStatus inspectorIn
 	defer metrics.SetDuration(inspectServicesDurationGauges.WithLabelValues(deploymentName), start)
 	counterMetric := inspectedServicesCounters.WithLabelValues(deploymentName)
 
-	// Fetch existing services
-	svcs := r.context.ServicesModInterface()
-
 	reconcileRequired := k8sutil.NewReconcile(cachedStatus)
+
+	mi := memberInfos{}
+
+	// Get members details
+	if err := status.Members.ForeachServerGroup(func(group api.ServerGroup, list api.MemberStatusList) error {
+		for _, m := range list {
+			var q memberInfo
+			q.cid = m.ClusterID
+
+			q.serving = m.Conditions.IsTrue(api.ConditionTypeServing)
+			q.sg = group == spec.Mode.ServingGroup()
+
+			if pod := m.PodName; pod != "" {
+				item, ok := r.context.ACS().Cluster(m.ClusterID)
+				if ok {
+					cache := item.Cache()
+					podStat, ok := cache.Pod().V1().GetSimple(pod)
+					if ok {
+						q.ip = podStat.Status.PodIP
+						q.port = shared.ArangoPort
+						q.portName = "server"
+						q.ready = k8sutil.IsPodReady(podStat) && podStat.DeletionTimestamp == nil
+					}
+				}
+
+				println("YYYYYYYYYYY", pod, q.ready)
+			}
+
+			mi[m.ID] = q
+		}
+
+		return nil
+	}); err != nil {
+		return err
+	}
 
 	// Ensure member services
 	if err := status.Members.ForeachServerGroup(func(group api.ServerGroup, list api.MemberStatusList) error {
@@ -77,86 +154,191 @@ func (r *Resources) EnsureServices(ctx context.Context, cachedStatus inspectorIn
 			targetPort = shared.ArangoSyncWorkerPort
 		}
 
-		for _, m := range list {
-			memberName := m.ArangoMemberName(r.context.GetAPIObject().GetName(), group)
+		memberServiceEnsurer := func(item sutil.ACSItem) error {
+			for _, m := range list {
+				memberName := m.ArangoMemberName(r.context.GetAPIObject().GetName(), group)
 
-			member, ok := cachedStatus.ArangoMember().V1().GetSimple(memberName)
-			if !ok {
-				return errors.Newf("Member %s not found", memberName)
-			}
+				svcs := item.Cache().ServicesModInterface()
 
-			if s, ok := cachedStatus.Service().V1().GetSimple(member.GetName()); !ok {
-				s = &core.Service{
-					ObjectMeta: meta.ObjectMeta{
-						Name:      member.GetName(),
-						Namespace: member.GetNamespace(),
-						OwnerReferences: []meta.OwnerReference{
-							member.AsOwner(),
-						},
-					},
-					Spec: core.ServiceSpec{
-						Type: core.ServiceTypeClusterIP,
-						Ports: []core.ServicePort{
-							{
-								Name:       "server",
-								Protocol:   "TCP",
-								Port:       shared.ArangoPort,
-								TargetPort: intstr.IntOrString{IntVal: targetPort},
+				member, ok := item.Cache().ArangoMember().V1().GetSimple(memberName)
+				if !ok {
+					return errors.Newf("Member %s not found", memberName)
+				}
+
+				if s, ok := item.Cache().Service().V1().GetSimple(member.GetName()); !ok {
+					s = &core.Service{
+						ObjectMeta: meta.ObjectMeta{
+							Name:      member.GetName(),
+							Namespace: member.GetNamespace(),
+							OwnerReferences: []meta.OwnerReference{
+								member.AsOwner(),
 							},
 						},
-						PublishNotReadyAddresses: true,
-						Selector:                 k8sutil.LabelsForMember(deploymentName, group.AsRole(), m.ID),
-					},
-				}
-
-				err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-					_, err := svcs.Create(ctxChild, s, meta.CreateOptions{})
-					return err
-				})
-				if err != nil {
-					if !k8sutil.IsConflict(err) {
-						return err
+						Spec: core.ServiceSpec{
+							Type: core.ServiceTypeClusterIP,
+							Ports: []core.ServicePort{
+								{
+									Name:       "server",
+									Protocol:   "TCP",
+									Port:       shared.ArangoPort,
+									TargetPort: intstr.IntOrString{IntVal: targetPort},
+								},
+							},
+							PublishNotReadyAddresses: true,
+						},
 					}
-				}
-
-				reconcileRequired.Required()
-				continue
-			} else {
-				spec := s.Spec.DeepCopy()
-
-				spec.Type = core.ServiceTypeClusterIP
-				spec.Ports = []core.ServicePort{
-					{
-						Name:       "server",
-						Protocol:   "TCP",
-						Port:       shared.ArangoPort,
-						TargetPort: intstr.IntOrString{IntVal: targetPort},
-					},
-				}
-				spec.PublishNotReadyAddresses = true
-				spec.Selector = k8sutil.LabelsForMember(deploymentName, group.AsRole(), m.ID)
-
-				if !equality.Semantic.DeepDerivative(*spec, s.Spec) {
-					s.Spec = *spec
 
 					err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-						_, err := svcs.Update(ctxChild, s, meta.UpdateOptions{})
+						_, err := svcs.Create(ctxChild, s, meta.CreateOptions{})
 						return err
 					})
 					if err != nil {
-						return err
+						if !k8sutil.IsConflict(err) {
+							return err
+						}
 					}
 
 					reconcileRequired.Required()
 					continue
+				} else {
+					spec := s.Spec.DeepCopy()
+
+					spec.Type = core.ServiceTypeClusterIP
+					spec.Ports = []core.ServicePort{
+						{
+							Name:       "server",
+							Protocol:   "TCP",
+							Port:       shared.ArangoPort,
+							TargetPort: intstr.IntOrString{IntVal: targetPort},
+						},
+					}
+					spec.PublishNotReadyAddresses = true
+
+					if item.IsOwnedBy(m.ClusterID) {
+						spec.Selector = k8sutil.LabelsForMember(deploymentName, group.AsRole(), m.ID)
+					} else {
+						spec.Selector = nil
+					}
+
+					if !equality.Semantic.DeepDerivative(*spec, s.Spec) || (spec.Selector != nil && s.Spec.Selector == nil) || (spec.Selector == nil && s.Spec.Selector != nil) {
+						s.Spec = *spec
+
+						err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
+							_, err := svcs.Update(ctxChild, s, meta.UpdateOptions{})
+							return err
+						})
+						if err != nil {
+							return err
+						}
+
+						reconcileRequired.Required()
+						continue
+					}
+
+					if eread, err := item.Cache().Endpoints().V1(); err == nil {
+						if !item.IsOwnedBy(m.ClusterID) {
+							ends := item.Cache().EndpointsModInterface()
+
+							if end, ok := eread.GetSimple(member.GetName()); !ok {
+								// Create
+								end = &core.Endpoints{
+									ObjectMeta: meta.ObjectMeta{
+										Name:         member.GetName(),
+										GenerateName: "",
+										Namespace:    item.Cache().Namespace(),
+										OwnerReferences: []meta.OwnerReference{
+											{
+												APIVersion: inspector.ServiceVersionV1,
+												Kind:       inspector.ServiceKind,
+												Name:       member.GetName(),
+												UID:        s.GetUID(),
+											},
+										},
+									},
+								}
+
+								err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
+									_, err := ends.Create(ctxChild, end, meta.CreateOptions{})
+									return err
+								})
+								if err != nil {
+									return err
+								}
+
+								reconcileRequired.Required()
+								continue
+							} else {
+								var subsets *core.EndpointSubset
+								if det, ok := mi[m.ID]; ok && det.ip != "" {
+									subsets = &core.EndpointSubset{
+										Addresses: []core.EndpointAddress{
+											{
+												IP: det.ip,
+											},
+										},
+										Ports: []core.EndpointPort{
+											{
+												Name:     det.portName,
+												Protocol: "TCP",
+												Port:     det.port,
+											},
+										},
+									}
+								}
+
+								changed := false
+								if subsets == nil {
+									// No IP behind
+									if end.Subsets != nil {
+										end.Subsets = nil
+										changed = true
+									}
+								} else {
+									if len(end.Subsets) != 1 || !equality.Semantic.DeepEqual(*subsets, end.Subsets[0]) {
+										end.Subsets = []core.EndpointSubset{
+											*subsets,
+										}
+										changed = true
+									}
+								}
+
+								if changed {
+									err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
+										_, err := ends.Update(ctxChild, end, meta.UpdateOptions{})
+										return err
+									})
+									if err != nil {
+										return err
+									}
+
+									reconcileRequired.Required()
+									continue
+								}
+							}
+						}
+					}
 				}
 			}
+
+			return nil
 		}
 
-		return nil
+		return r.context.ACS().ForEachHealthyCluster(func(item sutil.ACSItem) error {
+			if err := memberServiceEnsurer(item); err != nil {
+				if item.IsMain() {
+					return err
+				}
+
+				r.log.Warn().Str("cid", string(item.UID())).Err(err).Msg("Unable to ensure services")
+			}
+
+			return nil
+		})
 	}); err != nil {
 		return err
 	}
+
+	svcs := cachedStatus.ServicesModInterface()
 
 	// Headless service
 	counterMetric.Inc()
@@ -176,35 +358,66 @@ func (r *Resources) EnsureServices(ctx context.Context, cachedStatus inspectorIn
 	// Internal database client service
 	single := spec.GetMode().HasSingleServers()
 	counterMetric.Inc()
-	if _, exists := cachedStatus.Service().V1().GetSimple(k8sutil.CreateDatabaseClientServiceName(deploymentName)); !exists {
-		ctxChild, cancel := globals.GetGlobalTimeouts().Kubernetes().WithTimeout(ctx)
-		defer cancel()
-		svcName, newlyCreated, err := k8sutil.CreateDatabaseClientService(ctxChild, svcs, apiObject, single, owner)
-		if err != nil {
-			log.Debug().Err(err).Msg("Failed to create database client service")
-			return errors.WithStack(err)
-		}
-		if newlyCreated {
-			log.Debug().Str("service", svcName).Msg("Created database client service")
-		}
-		{
-			status, lastVersion := r.context.GetStatus()
-			if status.ServiceName != svcName {
-				status.ServiceName = svcName
-				if err := r.context.UpdateStatus(ctx, status, lastVersion); err != nil {
-					return errors.WithStack(err)
-				}
-			}
-		}
-	}
 
-	// Database external access service
-	eaServiceName := k8sutil.CreateDatabaseExternalAccessServiceName(deploymentName)
 	role := "coordinator"
 	if single {
 		role = "single"
 	}
-	if err := r.ensureExternalAccessServices(ctx, cachedStatus, svcs, eaServiceName, role, "database", shared.ArangoPort, false, spec.ExternalAccess, apiObject, log); err != nil {
+
+	if err := r.context.ACS().ForEachHealthyCluster(func(item sutil.ACSItem) error {
+		if svc, exists := item.Cache().Service().V1().GetSimple(k8sutil.CreateDatabaseClientServiceName(deploymentName)); !exists {
+			svcs := item.Cache().ServicesModInterface()
+
+			obj, err := item.Cache().GetCurrentArangoDeployment()
+			if err != nil {
+				return nil
+			}
+
+			ctxChild, cancel := globals.GetGlobalTimeouts().Kubernetes().WithTimeout(ctx)
+			defer cancel()
+			svcName, newlyCreated, err := k8sutil.CreateDatabaseClientService(ctxChild, svcs, apiObject, single, obj.AsOwner())
+			if err != nil {
+				log.Debug().Err(err).Msg("Failed to create database client service")
+				return errors.WithStack(err)
+			}
+			if newlyCreated {
+				log.Debug().Str("service", svcName).Msg("Created database client service")
+			}
+		} else {
+			return manageAdvertisedArangoDServiceEndpoints(ctx, item, deploymentName, role, svc, mi)
+		}
+
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	// Database external access service
+	eaServiceName := k8sutil.CreateDatabaseExternalAccessServiceName(deploymentName)
+
+	if err := r.context.ACS().ForEachHealthyCluster(func(item sutil.ACSItem) error {
+		obj, err := item.Cache().GetCurrentArangoDeployment()
+		if err != nil {
+			return nil
+		}
+
+		svcs := item.Cache().ServicesModInterface()
+
+		if err := r.ensureExternalAccessServices(ctx, item.Cache(), svcs, eaServiceName, role, "database", shared.ArangoPort, false, spec.ExternalAccess, obj, log, false); err != nil {
+			if item.IsMain() {
+				return errors.WithStack(err)
+			}
+
+			r.log.Warn().Err(err).Msgf("Unable to create EQ service")
+		}
+
+		svc, ok := item.Cache().Service().V1().GetSimple(eaServiceName)
+		if !ok {
+			return nil
+		}
+
+		return manageAdvertisedArangoDServiceEndpoints(ctx, item, deploymentName, role, svc, mi)
+	}); err != nil {
 		return errors.WithStack(err)
 	}
 
@@ -213,7 +426,7 @@ func (r *Resources) EnsureServices(ctx context.Context, cachedStatus inspectorIn
 		counterMetric.Inc()
 		eaServiceName := k8sutil.CreateSyncMasterClientServiceName(deploymentName)
 		role := "syncmaster"
-		if err := r.ensureExternalAccessServices(ctx, cachedStatus, svcs, eaServiceName, role, "sync", shared.ArangoSyncMasterPort, true, spec.Sync.ExternalAccess.ExternalAccessSpec, apiObject, log); err != nil {
+		if err := r.ensureExternalAccessServices(ctx, cachedStatus, svcs, eaServiceName, role, "sync", shared.ArangoSyncMasterPort, true, spec.Sync.ExternalAccess.ExternalAccessSpec, apiObject, log, true); err != nil {
 			return errors.WithStack(err)
 		}
 		status, lastVersion := r.context.GetStatus()
@@ -248,7 +461,7 @@ func (r *Resources) EnsureServices(ctx context.Context, cachedStatus inspectorIn
 // EnsureServices creates all services needed to service the deployment
 func (r *Resources) ensureExternalAccessServices(ctx context.Context, cachedStatus inspectorInterface.Inspector,
 	svcs servicev1.ModInterface, eaServiceName, svcRole, title string, port int, noneIsClusterIP bool,
-	spec api.ExternalAccessSpec, apiObject k8sutil.APIObject, log zerolog.Logger) error {
+	spec api.ExternalAccessSpec, apiObject k8sutil.APIObject, log zerolog.Logger, attachSelector bool) error {
 	// Database external access service
 	createExternalAccessService := false
 	deleteExternalAccessService := false
@@ -337,7 +550,7 @@ func (r *Resources) ensureExternalAccessServices(ctx context.Context, cachedStat
 		loadBalancerSourceRanges := spec.LoadBalancerSourceRanges
 		ctxChild, cancel := globals.GetGlobalTimeouts().Kubernetes().WithTimeout(ctx)
 		defer cancel()
-		_, newlyCreated, err := k8sutil.CreateExternalAccessService(ctxChild, svcs, eaServiceName, svcRole, apiObject, eaServiceType, port, nodePort, loadBalancerIP, loadBalancerSourceRanges, apiObject.AsOwner())
+		_, newlyCreated, err := k8sutil.CreateExternalAccessService(ctxChild, svcs, eaServiceName, svcRole, apiObject, eaServiceType, port, nodePort, loadBalancerIP, loadBalancerSourceRanges, apiObject.AsOwner(), attachSelector)
 		if err != nil {
 			log.Debug().Err(err).Msgf("Failed to create %s external access service", title)
 			return errors.WithStack(err)
@@ -346,5 +559,109 @@ func (r *Resources) ensureExternalAccessServices(ctx context.Context, cachedStat
 			log.Debug().Str("service", eaServiceName).Msgf("Created %s external access service", title)
 		}
 	}
+	return nil
+}
+
+func manageAdvertisedArangoDServiceEndpoints(ctx context.Context, item sutil.ACSItem, deploymentName, role string, svc *core.Service, mi memberInfos) error {
+	// Manage endpoints
+	if z := mi.GetAllReadyForCluster(item.UID()); len(z) > 0 {
+		if svc.Spec.Selector == nil {
+			svc.Spec.Selector = k8sutil.LabelsForDeployment(deploymentName, role)
+			if err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
+				_, err := item.Cache().ServicesModInterface().Update(ctxChild, svc, meta.UpdateOptions{})
+				return err
+			}); err != nil {
+				return err
+			}
+
+			return nil
+		}
+	} else {
+		if svc.Spec.Selector != nil {
+			svc.Spec.Selector = nil
+			if err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
+				_, err := item.Cache().ServicesModInterface().Update(ctxChild, svc, meta.UpdateOptions{})
+				return err
+			}); err != nil {
+				return err
+			}
+
+			return nil
+		}
+
+		if ends, err := item.Cache().Endpoints().V1(); err == nil {
+			end, ok := ends.GetSimple(svc.GetName())
+			if !ok {
+				end = &core.Endpoints{
+					ObjectMeta: meta.ObjectMeta{
+						Name:   svc.GetName(),
+						Labels: svc.Labels,
+						OwnerReferences: []meta.OwnerReference{
+							{
+								APIVersion: inspector.ServiceVersionV1,
+								Kind:       inspector.ServiceKind,
+								Name:       svc.GetName(),
+								UID:        svc.GetUID(),
+							},
+						},
+					},
+				}
+				if err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
+					_, err := item.Cache().EndpointsModInterface().Create(ctxChild, end, meta.CreateOptions{})
+					return err
+				}); err != nil {
+					return err
+				}
+				return nil
+			}
+
+			if n := mi.GetAllReady(); len(n) == 0 {
+				// No endpoints, push as nil
+				if end.Subsets != nil {
+					end.Subsets = nil
+					if err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
+						_, err := item.Cache().EndpointsModInterface().Update(ctxChild, end, meta.UpdateOptions{})
+						return err
+					}); err != nil {
+						return err
+					}
+					return nil
+				}
+			} else {
+				ends := make([]core.EndpointSubset, len(n))
+
+				for id := range ends {
+					ep := mi[n[id]]
+
+					ends[id] = core.EndpointSubset{
+						Ports: []core.EndpointPort{
+							{
+								Name:     ep.portName,
+								Port:     ep.port,
+								Protocol: "TCP",
+							},
+						},
+						Addresses: []core.EndpointAddress{
+							{
+								IP: ep.ip,
+							},
+						},
+					}
+				}
+
+				if !equality.Semantic.DeepEqual(end.Subsets, ends) {
+					end.Subsets = ends
+					if err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
+						_, err := item.Cache().EndpointsModInterface().Update(ctxChild, end, meta.UpdateOptions{})
+						return err
+					}); err != nil {
+						return err
+					}
+					return nil
+				}
+			}
+		}
+	}
+
 	return nil
 }

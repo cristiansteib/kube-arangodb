@@ -36,6 +36,7 @@ import (
 	"github.com/arangodb/kube-arangodb/pkg/util"
 	"github.com/arangodb/kube-arangodb/pkg/util/constants"
 	"github.com/arangodb/kube-arangodb/pkg/util/k8sutil"
+	inspectorInterface "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector"
 )
 
 const (
@@ -46,7 +47,7 @@ const (
 
 // runPodFinalizers goes through the list of pod finalizers to see if they can be removed.
 // Returns: Interval_till_next_inspection, error
-func (r *Resources) runPodFinalizers(ctx context.Context, p *v1.Pod, memberStatus api.MemberStatus, updateMember func(api.MemberStatus) error) (util.Interval, error) {
+func (r *Resources) runPodFinalizers(ctx context.Context, cache inspectorInterface.Inspector, p *v1.Pod, memberStatus api.MemberStatus, updateMember func(api.MemberStatus) error) (util.Interval, error) {
 	log := r.log.With().Str("pod-name", p.GetName()).Logger()
 	var removalList []string
 
@@ -64,7 +65,7 @@ func (r *Resources) runPodFinalizers(ctx context.Context, p *v1.Pod, memberStatu
 				removalList = append(removalList, f)
 				break
 			}
-			if err := r.inspectFinalizerPodAgencyServing(ctx, log, p, memberStatus, updateMember); err == nil {
+			if err := r.inspectFinalizerPodAgencyServing(ctx, cache, log, p, memberStatus, updateMember); err == nil {
 				removalList = append(removalList, f)
 			} else {
 				log.Debug().Err(err).Str("finalizer", f).Msg("Cannot remove finalizer yet")
@@ -76,7 +77,7 @@ func (r *Resources) runPodFinalizers(ctx context.Context, p *v1.Pod, memberStatu
 				removalList = append(removalList, f)
 				break
 			}
-			if err := r.inspectFinalizerPodDrainDBServer(ctx, log, p, memberStatus, updateMember); err == nil {
+			if err := r.inspectFinalizerPodDrainDBServer(ctx, cache, log, p, memberStatus, updateMember); err == nil {
 				removalList = append(removalList, f)
 			} else {
 				log.Debug().Err(err).Str("finalizer", f).Msg("Cannot remove Pod finalizer yet")
@@ -117,7 +118,7 @@ func (r *Resources) runPodFinalizers(ctx context.Context, p *v1.Pod, memberStatu
 	}
 	// Remove finalizers (if needed)
 	if len(removalList) > 0 {
-		if _, err := k8sutil.RemovePodFinalizers(ctx, r.context.GetCachedStatus(), log, r.context.PodsModInterface(), p, removalList, false); err != nil {
+		if _, err := k8sutil.RemovePodFinalizers(ctx, cache, log, cache.PodsModInterface(), p, removalList, false); err != nil {
 			log.Debug().Err(err).Msg("Failed to update pod (to remove finalizers)")
 			return 0, errors.WithStack(err)
 		}
@@ -131,7 +132,7 @@ func (r *Resources) runPodFinalizers(ctx context.Context, p *v1.Pod, memberStatu
 
 // inspectFinalizerPodAgencyServing checks the finalizer condition for agency-serving.
 // It returns nil if the finalizer can be removed.
-func (r *Resources) inspectFinalizerPodAgencyServing(ctx context.Context, log zerolog.Logger, p *v1.Pod, memberStatus api.MemberStatus, updateMember func(api.MemberStatus) error) error {
+func (r *Resources) inspectFinalizerPodAgencyServing(ctx context.Context, cache inspectorInterface.Inspector, log zerolog.Logger, p *v1.Pod, memberStatus api.MemberStatus, updateMember func(api.MemberStatus) error) error {
 	if err := r.prepareAgencyPodTermination(ctx, log, p, memberStatus, func(update api.MemberStatus) error {
 		if err := updateMember(update); err != nil {
 			return errors.WithStack(err)
@@ -147,7 +148,7 @@ func (r *Resources) inspectFinalizerPodAgencyServing(ctx context.Context, log ze
 	// of the agent, also remove the PVC
 	if memberStatus.Conditions.IsTrue(api.ConditionTypeAgentRecoveryNeeded) {
 		err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-			return r.context.PersistentVolumeClaimsModInterface().Delete(ctxChild, memberStatus.PersistentVolumeClaimName, meta.DeleteOptions{})
+			return cache.PersistentVolumeClaimsModInterface().Delete(ctxChild, memberStatus.PersistentVolumeClaimName, meta.DeleteOptions{})
 		})
 		if err != nil && !k8sutil.IsNotFound(err) {
 			log.Warn().Err(err).Msg("Failed to delete PVC for member")
@@ -161,7 +162,7 @@ func (r *Resources) inspectFinalizerPodAgencyServing(ctx context.Context, log ze
 
 // inspectFinalizerPodDrainDBServer checks the finalizer condition for drain-dbserver.
 // It returns nil if the finalizer can be removed.
-func (r *Resources) inspectFinalizerPodDrainDBServer(ctx context.Context, log zerolog.Logger, p *v1.Pod, memberStatus api.MemberStatus, updateMember func(api.MemberStatus) error) error {
+func (r *Resources) inspectFinalizerPodDrainDBServer(ctx context.Context, cache inspectorInterface.Inspector, log zerolog.Logger, p *v1.Pod, memberStatus api.MemberStatus, updateMember func(api.MemberStatus) error) error {
 	if err := r.prepareDBServerPodTermination(ctx, log, p, memberStatus, func(update api.MemberStatus) error {
 		if err := updateMember(update); err != nil {
 			return errors.WithStack(err)
@@ -176,7 +177,7 @@ func (r *Resources) inspectFinalizerPodDrainDBServer(ctx context.Context, log ze
 	// If this DBServer is cleaned out, we need to remove the PVC.
 	if memberStatus.Conditions.IsTrue(api.ConditionTypeCleanedOut) || memberStatus.Phase == api.MemberPhaseDrain {
 		err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-			return r.context.PersistentVolumeClaimsModInterface().Delete(ctxChild, memberStatus.PersistentVolumeClaimName, meta.DeleteOptions{})
+			return cache.PersistentVolumeClaimsModInterface().Delete(ctxChild, memberStatus.PersistentVolumeClaimName, meta.DeleteOptions{})
 		})
 		if err != nil && !k8sutil.IsNotFound(err) {
 			log.Warn().Err(err).Msg("Failed to delete PVC for member")

@@ -43,6 +43,18 @@ type acs struct {
 	cache inspectorInterface.Inspector
 }
 
+func (a acs) IsOwnedBy(uid types.UID) bool {
+	if uid == a.main || uid == "" {
+		return true
+	}
+
+	return false
+}
+
+func (a acs) IsMain() bool {
+	return true
+}
+
 func (a acs) ForEachHealthyCluster(f func(item sutil.ACSItem) error) error {
 	return f(a)
 }
@@ -73,11 +85,7 @@ func (a acs) Cache() inspectorInterface.Inspector {
 }
 
 func (a acs) Cluster(uid types.UID) (sutil.ACSItem, bool) {
-	if a.main == uid || uid == "" {
-		return a, true
-	}
-
-	return nil, false
+	return a, true
 }
 
 func (a acs) RemoteClusters() []types.UID {

@@ -36,6 +36,7 @@ import (
 	"github.com/arangodb/kube-arangodb/pkg/util"
 	"github.com/arangodb/kube-arangodb/pkg/util/constants"
 	"github.com/arangodb/kube-arangodb/pkg/util/k8sutil"
+	inspectorInterface "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector"
 )
 
 const (
@@ -43,7 +44,7 @@ const (
 )
 
 // runPVCFinalizers goes through the list of PVC finalizers to see if they can be removed.
-func (r *Resources) runPVCFinalizers(ctx context.Context, p *v1.PersistentVolumeClaim, group api.ServerGroup,
+func (r *Resources) runPVCFinalizers(ctx context.Context, cache inspectorInterface.Inspector, p *v1.PersistentVolumeClaim, group api.ServerGroup,
 	memberStatus api.MemberStatus) (util.Interval, error) {
 	log := r.log.With().Str("pvc-name", p.GetName()).Logger()
 	var removalList []string
@@ -51,7 +52,7 @@ func (r *Resources) runPVCFinalizers(ctx context.Context, p *v1.PersistentVolume
 		switch f {
 		case constants.FinalizerPVCMemberExists:
 			log.Debug().Msg("Inspecting member exists finalizer")
-			if err := r.inspectFinalizerPVCMemberExists(ctx, log, group, memberStatus); err == nil {
+			if err := r.inspectFinalizerPVCMemberExists(ctx, cache, log, group, memberStatus); err == nil {
 				removalList = append(removalList, f)
 			} else {
 				log.Debug().Err(err).Str("finalizer", f).Msg("Cannot remove finalizer yet")
@@ -60,7 +61,7 @@ func (r *Resources) runPVCFinalizers(ctx context.Context, p *v1.PersistentVolume
 	}
 	// Remove finalizers (if needed)
 	if len(removalList) > 0 {
-		_, err := k8sutil.RemovePVCFinalizers(ctx, r.context.GetCachedStatus(), log, r.context.PersistentVolumeClaimsModInterface(), p, removalList, false)
+		_, err := k8sutil.RemovePVCFinalizers(ctx, cache, log, cache.PersistentVolumeClaimsModInterface(), p, removalList, false)
 		if err != nil {
 			log.Debug().Err(err).Msg("Failed to update PVC (to remove finalizers)")
 			return 0, errors.WithStack(err)
@@ -74,7 +75,7 @@ func (r *Resources) runPVCFinalizers(ctx context.Context, p *v1.PersistentVolume
 
 // inspectFinalizerPVCMemberExists checks the finalizer condition for member-exists.
 // It returns nil if the finalizer can be removed.
-func (r *Resources) inspectFinalizerPVCMemberExists(ctx context.Context, log zerolog.Logger, group api.ServerGroup,
+func (r *Resources) inspectFinalizerPVCMemberExists(ctx context.Context, cache inspectorInterface.Inspector, log zerolog.Logger, group api.ServerGroup,
 	memberStatus api.MemberStatus) error {
 	// Inspect member phase
 	if memberStatus.Phase.IsFailed() {
@@ -106,7 +107,7 @@ func (r *Resources) inspectFinalizerPVCMemberExists(ctx context.Context, log zer
 	if memberStatus.PodName != "" {
 		log.Info().Msg("Removing Pod of member, because PVC is being removed")
 		err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-			return r.context.PodsModInterface().Delete(ctxChild, memberStatus.PodName, meta.DeleteOptions{})
+			return cache.PodsModInterface().Delete(ctxChild, memberStatus.PodName, meta.DeleteOptions{})
 		})
 		if err != nil && !k8sutil.IsNotFound(err) {
 			log.Debug().Err(err).Msg("Failed to delete pod")

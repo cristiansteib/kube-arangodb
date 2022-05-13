@@ -45,6 +45,8 @@ type MemberStatus struct {
 	RID types.UID `json:"rid,omitempty"`
 	// ClusterID holds the ID of the Arango deployment.
 	ClusterID types.UID `json:"cid,omitempty"`
+	// ExpectedClusterID holds the ID of the Arango deployment.
+	ExpectedClusterID types.UID `json:"ecid,omitempty"`
 	// Phase holds the current lifetime phase of this member
 	Phase MemberPhase `json:"phase"`
 	// CreatedAt holds the creation timestamp of this member.

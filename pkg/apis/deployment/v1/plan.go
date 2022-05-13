@@ -195,6 +195,9 @@ const (
 
 	// Resources
 	ActionTypeResourceSync ActionType = "ResourceSync"
+
+	// ACS
+	ActionTypeSetExpectedClusterID ActionType = "SetExpectedClusterID"
 )
 
 const (

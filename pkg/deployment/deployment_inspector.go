@@ -223,7 +223,7 @@ func (d *Deployment) inspectDeploymentWithError(ctx context.Context, lastInterva
 	}
 
 	// Inspection of generated resources needed
-	if x, err := d.resources.InspectPods(ctx, d.GetCachedStatus()); err != nil {
+	if x, err := d.resources.InspectPods(ctx); err != nil {
 		return minInspectionInterval, errors.Wrapf(err, "Pod inspection failed")
 	} else {
 		nextInterval = nextInterval.ReduceTo(x)
@@ -437,7 +437,7 @@ func (d *Deployment) ensureResources(ctx context.Context, lastInterval util.Inte
 		}
 	}
 
-	if err := d.resources.EnsurePVCs(ctx, cachedStatus); err != nil {
+	if err := d.resources.EnsurePVCs(ctx); err != nil {
 		return minInspectionInterval, errors.Wrapf(err, "PVC creation failed")
 	}
 

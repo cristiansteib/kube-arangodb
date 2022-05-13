@@ -106,6 +106,13 @@ func IsRotationRequired(log zerolog.Logger, acs sutil.ACS, spec api.DeploymentSp
 		return
 	}
 
+	if member.ExpectedClusterID != "" {
+		if member.ClusterID != member.ExpectedClusterID {
+			mode = GracefulRotation
+			return
+		}
+	}
+
 	if specTemplate == nil || statusTemplate == nil {
 		// If spec or status is nil rotation is not needed
 		return

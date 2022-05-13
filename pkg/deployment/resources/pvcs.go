@@ -29,7 +29,6 @@ import (
 	"github.com/arangodb/kube-arangodb/pkg/util/constants"
 	"github.com/arangodb/kube-arangodb/pkg/util/errors"
 	"github.com/arangodb/kube-arangodb/pkg/util/k8sutil"
-	inspectorInterface "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector"
 )
 
 // createPVCFinalizers creates a list of finalizers for a PVC created for the given group.
@@ -38,10 +37,9 @@ func (r *Resources) createPVCFinalizers(group api.ServerGroup) []string {
 }
 
 // EnsurePVCs creates all PVC's listed in member status
-func (r *Resources) EnsurePVCs(ctx context.Context, cachedStatus inspectorInterface.Inspector) error {
+func (r *Resources) EnsurePVCs(ctx context.Context) error {
 	apiObject := r.context.GetAPIObject()
 	deploymentName := apiObject.GetName()
-	owner := apiObject.AsOwner()
 	iterator := r.context.GetServerGroupIterator()
 	status, _ := r.context.GetStatus()
 	enforceAntiAffinity := r.context.GetSpec().GetEnvironment().IsProduction()
@@ -52,7 +50,21 @@ func (r *Resources) EnsurePVCs(ctx context.Context, cachedStatus inspectorInterf
 				continue
 			}
 
-			if _, exists := cachedStatus.PersistentVolumeClaim().V1().GetSimple(m.PersistentVolumeClaimName); exists {
+			cluster, ok := r.context.ACS().Cluster(m.ClusterID)
+			if !ok {
+				return errors.Newf("Unable to find cluster with id %s", m.ExpectedClusterID)
+			}
+
+			if !cluster.Ready() {
+				return errors.Newf("Cluster %s is not ready", m.ExpectedClusterID)
+			}
+
+			obj, err := cluster.Cache().GetCurrentArangoDeployment()
+			if err != nil {
+				return err
+			}
+
+			if _, exists := cluster.Cache().PersistentVolumeClaim().V1().GetSimple(m.PersistentVolumeClaimName); exists {
 				continue
 			}
 
@@ -61,10 +73,10 @@ func (r *Resources) EnsurePVCs(ctx context.Context, cachedStatus inspectorInterf
 			resources := spec.Resources
 			vct := spec.VolumeClaimTemplate
 			finalizers := r.createPVCFinalizers(group)
-			err := globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
-				return k8sutil.CreatePersistentVolumeClaim(ctxChild, r.context.PersistentVolumeClaimsModInterface(),
+			err = globals.GetGlobalTimeouts().Kubernetes().RunWithTimeout(ctx, func(ctxChild context.Context) error {
+				return k8sutil.CreatePersistentVolumeClaim(ctxChild, cluster.Cache().PersistentVolumeClaimsModInterface(),
 					m.PersistentVolumeClaimName, deploymentName, storageClassName, role, enforceAntiAffinity,
-					resources, vct, finalizers, owner)
+					resources, vct, finalizers, obj.AsOwner())
 			})
 			if err != nil {
 				return errors.WithStack(err)

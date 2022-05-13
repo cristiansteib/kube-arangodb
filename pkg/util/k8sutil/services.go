@@ -123,7 +123,7 @@ func CreateHeadlessService(ctx context.Context, svcs servicev1.ModInterface, dep
 	}
 	publishNotReadyAddresses := true
 	serviceType := core.ServiceTypeClusterIP
-	newlyCreated, err := createService(ctx, svcs, svcName, deploymentName, shared.ClusterIPNone, "", serviceType, ports, "", nil, publishNotReadyAddresses, owner)
+	newlyCreated, err := createService(ctx, svcs, svcName, deploymentName, shared.ClusterIPNone, "", serviceType, ports, "", nil, publishNotReadyAddresses, owner, true)
 	if err != nil {
 		return "", false, errors.WithStack(err)
 	}
@@ -153,7 +153,7 @@ func CreateDatabaseClientService(ctx context.Context, svcs servicev1.ModInterfac
 	}
 	serviceType := core.ServiceTypeClusterIP
 	publishNotReadyAddresses := false
-	newlyCreated, err := createService(ctx, svcs, svcName, deploymentName, "", role, serviceType, ports, "", nil, publishNotReadyAddresses, owner)
+	newlyCreated, err := createService(ctx, svcs, svcName, deploymentName, "", role, serviceType, ports, "", nil, publishNotReadyAddresses, owner, false)
 	if err != nil {
 		return "", false, errors.WithStack(err)
 	}
@@ -166,7 +166,7 @@ func CreateDatabaseClientService(ctx context.Context, svcs servicev1.ModInterfac
 // The returned bool is true if the service is created, or false when the service already existed.
 func CreateExternalAccessService(ctx context.Context, svcs servicev1.ModInterface, svcName, role string,
 	deployment metav1.Object, serviceType core.ServiceType, port, nodePort int, loadBalancerIP string,
-	loadBalancerSourceRanges []string, owner metav1.OwnerReference) (string, bool, error) {
+	loadBalancerSourceRanges []string, owner metav1.OwnerReference, attachSelector bool) (string, bool, error) {
 	deploymentName := deployment.GetName()
 	ports := []core.ServicePort{
 		{
@@ -177,7 +177,7 @@ func CreateExternalAccessService(ctx context.Context, svcs servicev1.ModInterfac
 		},
 	}
 	publishNotReadyAddresses := false
-	newlyCreated, err := createService(ctx, svcs, svcName, deploymentName, "", role, serviceType, ports, loadBalancerIP, loadBalancerSourceRanges, publishNotReadyAddresses, owner)
+	newlyCreated, err := createService(ctx, svcs, svcName, deploymentName, "", role, serviceType, ports, loadBalancerIP, loadBalancerSourceRanges, publishNotReadyAddresses, owner, attachSelector)
 	if err != nil {
 		return "", false, errors.WithStack(err)
 	}
@@ -190,7 +190,7 @@ func CreateExternalAccessService(ctx context.Context, svcs servicev1.ModInterfac
 // The returned bool is true if the service is created, or false when the service already existed.
 func createService(ctx context.Context, svcs servicev1.ModInterface, svcName, deploymentName, clusterIP, role string,
 	serviceType core.ServiceType, ports []core.ServicePort, loadBalancerIP string, loadBalancerSourceRanges []string,
-	publishNotReadyAddresses bool, owner metav1.OwnerReference) (bool, error) {
+	publishNotReadyAddresses bool, owner metav1.OwnerReference, attachSelector bool) (bool, error) {
 	labels := LabelsForDeployment(deploymentName, role)
 	svc := &core.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -201,12 +201,14 @@ func createService(ctx context.Context, svcs servicev1.ModInterface, svcName, de
 		Spec: core.ServiceSpec{
 			Type:                     serviceType,
 			Ports:                    ports,
-			Selector:                 labels,
 			ClusterIP:                clusterIP,
 			PublishNotReadyAddresses: publishNotReadyAddresses,
 			LoadBalancerIP:           loadBalancerIP,
 			LoadBalancerSourceRanges: loadBalancerSourceRanges,
 		},
+	}
+	if attachSelector {
+		svc.Spec.Selector = labels
 	}
 	AddOwnerRefToObject(svc.GetObjectMeta(), &owner)
 	if _, err := svcs.Create(ctx, svc, metav1.CreateOptions{}); IsAlreadyExists(err) {

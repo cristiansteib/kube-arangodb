@@ -82,6 +82,10 @@ type DeploymentStatusMemberElement struct {
 	Member MemberStatus `json:"member,omitempty"`
 }
 
+func (ds DeploymentStatusMemberElement) ArangoMember(name string) string {
+	return ds.Member.ArangoMemberName(name, ds.Group)
+}
+
 func (ds DeploymentStatusMembers) AsList() DeploymentStatusMemberElements {
 	return ds.AsListInGroups(AllServerGroups...)
 }

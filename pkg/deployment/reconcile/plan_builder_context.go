@@ -44,6 +44,7 @@ type PlanBuilderContext interface {
 	reconciler.KubernetesEventGenerator
 
 	sutil.ACSGetter
+
 	// GetAuthentication return authentication for members
 	GetAuthentication() conn.Auth
 	// GetBackup receives information about a backup resource

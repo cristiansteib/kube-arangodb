@@ -18,41 +18,32 @@
 // Copyright holder is ArangoDB GmbH, Cologne, Germany
 //
 
-package sutil
+package sync
 
 import (
-	"context"
-
-	api "github.com/arangodb/kube-arangodb/pkg/apis/deployment/v1"
+	"github.com/arangodb/kube-arangodb/pkg/deployment/resources/inspector"
 	inspectorInterface "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector"
-	"github.com/arangodb/kube-arangodb/pkg/util/kclient"
-	"k8s.io/apimachinery/pkg/types"
+	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-type ACSGetter interface {
-	ACS() ACS
-}
-
-type ACS interface {
-	ACSItem
-
-	Inspect(ctx context.Context, deployment *api.ArangoDeployment, client kclient.Client, cachedStatus inspectorInterface.Inspector) error
-
-	Cluster(uid types.UID) (ACSItem, bool)
-	CurrentClusterCache() inspectorInterface.Inspector
-	ClusterCache(uid types.UID) (inspectorInterface.Inspector, bool)
-
-	ForEachHealthyCluster(f func(item ACSItem) error) error
-
-	RemoteClusters() []types.UID
-}
-
-type ACSItem interface {
-	UID() types.UID
-	Cache() inspectorInterface.Inspector
-	Ready() bool
-
-	IsOwnedBy(uid types.UID) bool
-
-	IsMain() bool
+func AddOwner(toCache inspectorInterface.Inspector, from, to meta.Object) (added bool) {
+	for _, owner := range from.GetOwnerReferences() {
+		switch owner.Kind {
+		case inspector.ArangoDeploymentKind:
+			d, err := toCache.GetCurrentArangoDeployment()
+			if err != nil {
+				continue
+			}
+			to.SetOwnerReferences(append(to.GetOwnerReferences(), d.AsOwner()))
+			added = true
+		case inspector.ArangoMemberKind:
+			d, ok := toCache.ArangoMember().V1().GetSimple(owner.Name)
+			if !ok {
+				continue
+			}
+			to.SetOwnerReferences(append(to.GetOwnerReferences(), d.AsOwner()))
+			added = true
+		}
+	}
+	return
 }

@@ -36,10 +36,12 @@ import (
 	"strings"
 
 	api "github.com/arangodb/kube-arangodb/pkg/apis/deployment/v1"
+	"github.com/arangodb/kube-arangodb/pkg/deployment/acs/sutil"
 	"github.com/arangodb/kube-arangodb/pkg/metrics"
 	"github.com/arangodb/kube-arangodb/pkg/util"
 	"github.com/arangodb/kube-arangodb/pkg/util/k8sutil"
 	podv1 "github.com/arangodb/kube-arangodb/pkg/util/k8sutil/inspector/pod/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 var (
@@ -56,7 +58,7 @@ const (
 // InspectPods lists all pods that belong to the given deployment and updates
 // the member status of the deployment accordingly.
 // Returns: Interval_till_next_inspection, error
-func (r *Resources) InspectPods(ctx context.Context, cachedStatus inspectorInterface.Inspector) (util.Interval, error) {
+func (r *Resources) InspectPods(ctx context.Context) (util.Interval, error) {
 	log := r.log
 	start := time.Now()
 	apiObject := r.context.GetAPIObject()
@@ -65,14 +67,39 @@ func (r *Resources) InspectPods(ctx context.Context, cachedStatus inspectorInter
 	nextInterval := maxPodInspectorInterval // Large by default, will be made smaller if needed in the rest of the function
 	defer metrics.SetDuration(inspectPodsDurationGauges.WithLabelValues(deploymentName), start)
 
+	pods := map[string]inspectorInterface.Inspector{}
+
+	if err := r.context.ACS().ForEachHealthyCluster(func(i sutil.ACSItem) error {
+		if !i.Ready() {
+			return nil
+		}
+
+		return i.Cache().Pod().V1().Iterate(func(pod *v1.Pod) error {
+			if _, ok := pods[pod.GetName()]; ok {
+				return errors.Newf("Pod %s already exists", pod.GetName())
+			}
+
+			pods[pod.GetName()] = i.Cache()
+
+			return nil
+		}, podv1.FilterPodsByLabels(k8sutil.LabelsForDeployment(deploymentName, "")))
+	}); err != nil {
+		return recheckSoonPodInspectorInterval, err
+	}
+
 	status, lastVersion := r.context.GetStatus()
 	var podNamesWithScheduleTimeout []string
 	var unscheduledPodNames []string
 
-	err := cachedStatus.Pod().V1().Iterate(func(pod *v1.Pod) error {
+	for name, cache := range pods {
+		pod, ok := cache.Pod().V1().GetSimple(name)
+		if !ok {
+			return recheckSoonPodInspectorInterval, errors.Newf("Pod does not exists while it should")
+		}
+
 		if k8sutil.IsArangoDBImageIDAndVersionPod(pod) {
 			// Image ID pods are not relevant to inspect here
-			return nil
+			continue
 		}
 
 		// Pod belongs to this deployment, update metric
@@ -85,13 +112,13 @@ func (r *Resources) InspectPods(ctx context.Context, cachedStatus inspectorInter
 				// Strange, pod belongs to us, but we have no member for it.
 				// Remove all finalizers, so it can be removed.
 				log.Warn().Msg("Pod belongs to this deployment, but we don't know the member. Removing all finalizers")
-				_, err := k8sutil.RemovePodFinalizers(ctx, r.context.GetCachedStatus(), log, r.context.PodsModInterface(), pod, pod.GetFinalizers(), false)
+				_, err := k8sutil.RemovePodFinalizers(ctx, cache, log, cache.PodsModInterface(), pod, pod.GetFinalizers(), false)
 				if err != nil {
 					log.Debug().Err(err).Msg("Failed to update pod (to remove all finalizers)")
-					return errors.WithStack(err)
+					return recheckSoonPodInspectorInterval, errors.WithStack(err)
 				}
 			}
-			return nil
+			continue
 		}
 
 		spec := r.context.GetSpec()
@@ -99,6 +126,14 @@ func (r *Resources) InspectPods(ctx context.Context, cachedStatus inspectorInter
 
 		// Update state
 		updateMemberStatusNeeded := false
+
+		if v, ok := pod.Annotations["arangodb.com/cid"]; ok {
+			if memberStatus.ExpectedClusterID != types.UID(v) {
+				memberStatus.ExpectedClusterID = types.UID(v)
+				updateMemberStatusNeeded = true
+			}
+		}
+
 		if k8sutil.IsPodSucceeded(pod, coreContainers) {
 			// Pod has terminated with exit code 0.
 			wasTerminated := memberStatus.Conditions.IsTrue(api.ConditionTypeTerminated)
@@ -238,7 +273,7 @@ func (r *Resources) InspectPods(ctx context.Context, cachedStatus inspectorInter
 				log.Debug().Str("pod-name", pod.GetName()).Msg("Updating member condition Ready, Started & Serving to true")
 
 				if status.Topology.IsTopologyOwned(memberStatus.Topology) {
-					nodes, err := cachedStatus.Node().V1()
+					nodes, err := cache.Node().V1()
 					if err == nil {
 						node, ok := nodes.GetSimple(pod.Spec.NodeName)
 						if ok {
@@ -286,7 +321,7 @@ func (r *Resources) InspectPods(ctx context.Context, cachedStatus inspectorInter
 				log.Debug().Str("pod-name", pod.GetName()).Msg("Pod marked as terminating")
 			}
 			// Process finalizers
-			if x, err := r.runPodFinalizers(ctx, pod, memberStatus, func(m api.MemberStatus) error {
+			if x, err := r.runPodFinalizers(ctx, cache, pod, memberStatus, func(m api.MemberStatus) error {
 				updateMemberStatusNeeded = true
 				memberStatus = m
 				return nil
@@ -300,21 +335,29 @@ func (r *Resources) InspectPods(ctx context.Context, cachedStatus inspectorInter
 
 		if updateMemberStatusNeeded {
 			if err := status.Members.Update(memberStatus, group); err != nil {
-				return errors.WithStack(err)
+				return recheckSoonPodInspectorInterval, errors.WithStack(err)
 			}
 		}
-
-		return nil
-	}, podv1.FilterPodsByLabels(k8sutil.LabelsForDeployment(deploymentName, "")))
-	if err != nil {
-		return 0, err
 	}
 
 	// Go over all members, check for missing pods
 	status.Members.ForeachServerGroup(func(group api.ServerGroup, members api.MemberStatusList) error {
 		for _, m := range members {
 			if podName := m.PodName; podName != "" {
-				if _, exists := cachedStatus.Pod().V1().GetSimple(podName); !exists {
+				exists := false
+				acs, ok := r.context.ACS().Cluster(m.ClusterID)
+				if ok {
+					if !acs.Ready() {
+						log.Info().Str("pod-name", podName).Msg("ACS for member is not ready")
+						continue
+					}
+
+					if _, e := acs.Cache().Pod().V1().GetSimple(podName); e {
+						exists = true
+					}
+				}
+
+				if !exists {
 					log.Debug().Str("pod-name", podName).Msg("Does not exist")
 					switch m.Phase {
 					case api.MemberPhaseNone, api.MemberPhasePending:

@@ -79,7 +79,7 @@ func GetCASecretName(apiObject k8sutil.APIObject) string {
 func (r *Resources) EnsureSecrets(ctx context.Context, log zerolog.Logger, cachedStatus inspectorInterface.Inspector) error {
 	start := time.Now()
 	spec := r.context.GetSpec()
-	secrets := r.context.SecretsModInterface()
+	secrets := r.context.ACS().Cache().SecretsModInterface()
 	status, _ := r.context.GetStatus()
 	apiObject := r.context.GetAPIObject()
 	deploymentName := apiObject.GetName()
