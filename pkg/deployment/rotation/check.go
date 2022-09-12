@@ -36,7 +36,7 @@ type Mode int
 
 const (
 	SkippedRotation Mode = iota
-	SilentRotation
+	SilentRotation       // Propagate changes without restart
 	InPlaceRotation
 	GracefulRotation
 	EnforcedRotation
@@ -97,6 +97,15 @@ func IsRotationRequired(acs sutil.ACS, spec api.DeploymentSpec, member api.Membe
 			reason = "Recreation enforced by annotation"
 			mode = EnforcedRotation
 			return
+		}
+
+		// todo - i guess we do not need it here
+		if v, ok := pod.Annotations[deployment.ArangoDeploymentPodChangeArchAnnotation]; ok {
+			if api.ArangoDeploymentArchitectureType(v).IsArchMismatch(spec.Architecture, *member.Architecture) {
+				reason = "Recreation pending due to architecture mismatch"
+				mode = SilentRotation
+				return
+			}
 		}
 	}
 

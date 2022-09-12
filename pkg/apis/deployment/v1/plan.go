@@ -110,6 +110,8 @@ const (
 	ActionTypeSetCurrentImage ActionType = "SetCurrentImage"
 	// ActionTypeSetMemberCurrentImage replace image of member to current one.
 	ActionTypeSetMemberCurrentImage ActionType = "SetMemberCurrentImage"
+	// ActionTypeSetMemberCurrentArch replace arch of member to current one.
+	ActionTypeSetMemberCurrentArch ActionType = "SetMemberCurrentArch"
 	// ActionTypeDisableClusterScaling turns off scaling DBservers and coordinators
 	ActionTypeDisableClusterScaling ActionType = "ScalingDisabled"
 	// ActionTypeEnableClusterScaling turns on scaling DBservers and coordinators
@@ -239,6 +241,8 @@ type Action struct {
 	Locals PlanLocals `json:"locals,omitempty"`
 	// ID reference of the task involved in this action (if any)
 	TaskID types.UID `json:"taskID,omitempty"`
+	// Architecture of the member involved in this action (if any)
+	Architecture ArangoDeploymentArchitectureType `json:"arch,omitempty"`
 }
 
 // Equal compares two Actions
@@ -254,7 +258,8 @@ func (a Action) Equal(other Action) bool {
 		a.Image == other.Image &&
 		equality.Semantic.DeepEqual(a.Params, other.Params) &&
 		a.Locals.Equal(other.Locals) &&
-		a.TaskID == other.TaskID
+		a.TaskID == other.TaskID &&
+		a.Architecture == other.Architecture
 }
 
 // AddParam returns copy of action with set parameter
@@ -330,6 +335,12 @@ func NewActionBuilder(group ServerGroup, memberID string) ActionBuilder {
 // action.
 func (a Action) SetImage(image string) Action {
 	a.Image = image
+	return a
+}
+
+// SetArch sets the Architecture field to the given value and returns the modified
+func (a Action) SetArch(arch ArangoDeploymentArchitectureType) Action {
+	a.Architecture = arch
 	return a
 }
 

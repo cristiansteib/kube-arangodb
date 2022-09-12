@@ -63,6 +63,7 @@ func (r *Reconciler) createNormalPlan(ctx context.Context, apiObject k8sutil.API
 		ApplyIfEmpty(r.createMarkToRemovePlan).
 		ApplyIfEmpty(r.createMemberMaintenanceManagementPlan).
 		ApplyIfEmpty(r.createRotateOrUpgradePlan).
+		ApplyIfEmpty(r.createChangeMemberArchPlan).
 		// Disable maintenance if upgrade process was done. Upgrade task throw IDLE Action if upgrade is pending
 		ApplyIfEmpty(r.createMaintenanceManagementPlan).
 		// Add keys

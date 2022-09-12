@@ -49,6 +49,16 @@ func (a ArangoDeploymentArchitecture) Validate() error {
 	return nil
 }
 
+func (a ArangoDeploymentArchitecture) IsArchAllowed(arch ArangoDeploymentArchitectureType) bool {
+	for id := range a {
+		if a[id] == arch {
+			return true
+		}
+	}
+
+	return false
+}
+
 type ArangoDeploymentArchitectureType string
 
 const (
@@ -91,6 +101,13 @@ func (a ArangoDeploymentArchitectureType) AsNodeSelectorRequirement() core.NodeS
 			},
 		},
 	}
+}
+
+func (a ArangoDeploymentArchitectureType) IsArchMismatch(deploymentArch ArangoDeploymentArchitecture, memberArch ArangoDeploymentArchitectureType) bool {
+	if a.Validate() == nil && deploymentArch.IsArchAllowed(a) && a != memberArch {
+		return true
+	}
+	return false
 }
 
 func GetArchsFromNodeSelector(selectors []core.NodeSelectorTerm) map[ArangoDeploymentArchitectureType]bool {

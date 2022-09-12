@@ -70,6 +70,8 @@ const (
 	ConditionTypeMarkedToRemove ConditionType = "MarkedToRemove"
 	// ConditionTypeUpgradeFailed indicates that upgrade failed
 	ConditionTypeUpgradeFailed ConditionType = "UpgradeFailed"
+	// ConditionTypeArchitectureMismatch indicates that the member has a different architecture than the deployment.
+	ConditionTypeArchitectureMismatch ConditionType = "ArchitectureMismatch"
 
 	// ConditionTypeMemberMaintenanceMode indicates that Maintenance is enabled on particular member
 	ConditionTypeMemberMaintenanceMode ConditionType = "MemberMaintenanceMode"

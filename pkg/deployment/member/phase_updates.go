@@ -62,6 +62,8 @@ var phase = phaseMap{
 				m.ClusterID = obj.GetUID()
 			}
 
+			// todo: m.architecture =! null = check if match
+
 			if m.Architecture == nil {
 				d := spec.Architecture.GetDefault()
 				m.Architecture = &d
@@ -100,6 +102,7 @@ func removeMemberConditionsMapFunc(m *api.MemberStatus) {
 	m.Conditions.Remove(api.ConditionTypeTopologyAware)
 	m.Conditions.Remove(api.MemberReplacementRequired)
 	m.Conditions.Remove(api.ConditionTypePVCResizePending)
+	m.Conditions.Remove(api.ConditionTypeArchitectureMismatch)
 
 	m.RemoveTerminationsBefore(time.Now().Add(-1 * recentTerminationsKeepPeriod))
 

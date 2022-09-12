@@ -222,6 +222,73 @@ func (r *Reconciler) isVolumeSizeChanged(_ context.Context, _ k8sutil.APIObject,
 
 	return true, "Volume is shrunk", nil
 }
+/*
+// isArchTypeChanged returns true and reason when the member should be replaced.
+func (r *Reconciler) isArchTypeChanged(_ context.Context, _ k8sutil.APIObject, spec api.DeploymentSpec,
+	_ api.DeploymentStatus, group api.ServerGroup, member api.MemberStatus,
+	context PlanBuilderContext) (bool, string, error) {
+
+	if member.PersistentVolumeClaimName == "" {
+		// Plan is irrelevant without PVC.
+		return false, "", nil
+	}
+
+	cache, ok := context.ACS().ClusterCache(member.ClusterID)
+	if !ok {
+		return false, "", nil
+	}
+
+	pvc, ok := cache.PersistentVolumeClaim().V1().GetSimple(member.PersistentVolumeClaimName)
+	if !ok {
+		r.log.
+			Str("role", group.AsRole()).
+			Str("id", member.ID).
+			Warn("Failed to get PVC")
+
+		return false, "", fmt.Errorf("failed to get PVC %s", member.PersistentVolumeClaimName)
+	}
+
+	groupSpec := spec.GetServerGroupSpec(group)
+	ok, volumeSize, requestedSize := shouldVolumeResize(groupSpec, pvc)
+	if !ok {
+		return false, "", nil
+	}
+
+	if group != api.ServerGroupDBServers && group != api.ServerGroupAgents {
+		r.log.
+			Str("pvc-storage-size", volumeSize.String()).
+			Str("requested-size", requestedSize.String()).
+			Warn("Volume size should not shrink, because it is not possible for \"%s\"", group.AsRole())
+
+		return false, "", nil
+	}
+
+	// From here on it is known that the member requires replacement, so `true` must be returned.
+	// If pod does not exist then it will try next time.
+	if pod, ok := cache.Pod().V1().GetSimple(member.Pod.GetName()); ok {
+		if v, ok := pod.GetAnnotations()[deployment.ArangoDeploymentPodChangeArchAnnotation]; ok {
+			arch := api.ArangoDeploymentArchitectureType(v)
+			if arch.IsArchMismatch(spec.Architecture, *member.Architecture) {
+				r.log.
+					Str("pod-name", member.Pod.GetName()).
+					Str("server-group", m.Group.AsRole()).
+					Warn("try changing an Architecture type, but %s", getRequiredRotateMessage(member.Pod.GetName()))
+				p = append(p, actions.NewAction(api.ActionTypeSetMemberCurrentArch, m.Group, member, "Architecture Mismatch").SetArch(arch))
+			}
+		}
+
+
+		if _, ok := pod.GetAnnotations()[deployment.ArangoDeploymentPodReplaceAnnotation]; !ok {
+			r.log.Str("pod-name", member.Pod.GetName()).
+				Warn("try shrinking volume size, but %s", getRequiredReplaceMessage(member.Pod.GetName()))
+			// No return here.
+		}
+	} else {
+		return false, "", fmt.Errorf("failed to get pod %s", member.Pod.GetName())
+	}
+
+	return true, "Volume is shrunk", nil
+}*/
 
 // shouldVolumeResize returns false when a volume should not resize.
 // Currently, it is only possible to shrink a volume size.
@@ -250,4 +317,9 @@ func shouldVolumeResize(groupSpec api.ServerGroupSpec,
 func getRequiredReplaceMessage(podName string) string {
 	return fmt.Sprintf("%s annotation is required to be set on the pod %s",
 		deployment.ArangoDeploymentPodReplaceAnnotation, podName)
+}
+
+func getRequiredRotateMessage(podName string) string {
+	return fmt.Sprintf("%s annotation is required to be set on the pod %s",
+		deployment.ArangoDeploymentPodRotateAnnotation, podName)
 }

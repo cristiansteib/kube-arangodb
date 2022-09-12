@@ -201,7 +201,9 @@ func (r *Reconciler) createUpdatePlanInternal(apiObject k8sutil.APIObject, spec 
 		} else {
 			p = p.After(
 				actions.NewAction(api.ActionTypeWaitForMemberUp, m.Group, m.Member),
-				actions.NewAction(api.ActionTypeWaitForMemberInSync, m.Group, m.Member))
+				actions.NewAction(api.ActionTypeWaitForMemberInSync, m.Group, m.Member),
+				// actions.NewAction(api.ActionTypeSetMemberCurrentArch, m.Group, m.Member),
+			)
 
 			p = p.Wrap(actions.NewAction(api.ActionTypeSetMemberCondition, m.Group, m.Member, reason).
 				AddParam(api.ConditionTypePendingUpdate.String(), "").AddParam(api.ConditionTypeUpdating.String(), "T"),
